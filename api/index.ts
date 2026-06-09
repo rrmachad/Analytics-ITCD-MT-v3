@@ -1,14 +1,12 @@
 import express from "express";
 import { GoogleGenAI } from "@google/genai";
 import multer from "multer";
-import path from "path";
-import { SYSTEM_INSTRUCTION } from "./constants";
+import { SYSTEM_INSTRUCTION } from "../constants";
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 600 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
-app.use(express.json({ limit: "120mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 const getGeminiClient = () => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
@@ -17,8 +15,7 @@ const getGeminiClient = () => {
 };
 
 const buildAnalysisPrompt = (reportType: string, decisionType: string, userComments: string): string => {
-  const dateOptions: Intl.DateTimeFormatOptions = { year: "numeric", month: "long", day: "numeric" };
-  const formattedDate = new Date().toLocaleDateString("pt-BR", dateOptions);
+  const formattedDate = new Date().toLocaleDateString("pt-BR", { year: "numeric", month: "long", day: "numeric" });
 
   return `DATA DE REFERÊNCIA OBRIGATÓRIA: ${formattedDate}.
 
@@ -105,7 +102,6 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
     );
 
     if (!initRes.ok) throw new Error(`Falha ao iniciar upload: ${await initRes.text()}`);
-
     const uploadUrl = initRes.headers.get("X-Goog-Upload-URL");
     if (!uploadUrl) throw new Error("URL de upload não retornada pela API.");
 
@@ -120,7 +116,6 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
     });
 
     if (!uploadRes.ok) throw new Error(`Falha no upload: ${await uploadRes.text()}`);
-
     const fileInfoResponse = await uploadRes.json();
     let currentFile = fileInfoResponse.file;
 
@@ -136,16 +131,12 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
     }
 
     if (currentFile.state !== "ACTIVE") {
-      throw new Error(`Arquivo não processado pelo Gemini. Estado final: ${currentFile.state}`);
+      throw new Error(`Arquivo não processado. Estado: ${currentFile.state}`);
     }
 
-    res.json({
-      fileUri: currentFile.uri,
-      mimeType: currentFile.mimeType,
-      fileName: req.file.originalname,
-    });
+    res.json({ fileUri: currentFile.uri, mimeType: currentFile.mimeType, fileName: req.file.originalname });
   } catch (error: any) {
-    console.error("Erro no upload de arquivo:", error);
+    console.error("Erro no upload:", error);
     res.status(500).json({ error: error.message || "Erro no upload" });
   }
 });
@@ -169,25 +160,11 @@ app.post("/api/analyze", async (req, res) => {
 
     for (const fileData of files) {
       parts.push({ text: `[INÍCIO DO ARQUIVO: ${fileData.name}]` });
-
       if (fileData.isLarge && fileData.fileUri) {
-        // Large file: reference via Files API URI
-        parts.push({
-          fileData: {
-            mimeType: fileData.mimeType,
-            fileUri: fileData.fileUri,
-          },
-        });
+        parts.push({ fileData: { mimeType: fileData.mimeType, fileUri: fileData.fileUri } });
       } else if (fileData.base64) {
-        // Normal file: inline base64 (native PDF support in Gemini)
-        parts.push({
-          inlineData: {
-            mimeType: fileData.mimeType || "application/pdf",
-            data: fileData.base64,
-          },
-        });
+        parts.push({ inlineData: { mimeType: fileData.mimeType || "application/pdf", data: fileData.base64 } });
       }
-
       parts.push({ text: `[FIM DO ARQUIVO: ${fileData.name}]` });
     }
 
@@ -200,29 +177,20 @@ app.post("/api/analyze", async (req, res) => {
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         console.log(`Análise — tentativa ${attempt}/${MAX_RETRIES}...`);
-
         const response = await ai.models.generateContent({
           model: "gemini-2.5-pro",
           contents: { role: "user", parts },
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.1,
-          },
+          config: { systemInstruction: SYSTEM_INSTRUCTION, temperature: 0.1 },
         });
-
         return res.json({ result: response.text || "Sem resultado gerado. Tente novamente." });
-
       } catch (error: any) {
         lastError = error;
         const isRetryable =
-          error.status === 503 ||
-          error.status === 500 ||
-          error.status === 429 ||
+          error.status === 503 || error.status === 500 || error.status === 429 ||
           (error.message && (error.message.includes("503") || error.message.includes("overloaded") || error.message.includes("quota")));
-
         if (isRetryable && attempt < MAX_RETRIES) {
           const delay = BASE_DELAY * Math.pow(2, attempt - 1) + Math.random() * 1000;
-          console.log(`Erro transitório. Tentando novamente em ${Math.round(delay / 1000)}s...`);
+          console.log(`Erro transitório. Retry em ${Math.round(delay / 1000)}s...`);
           await new Promise((r) => setTimeout(r, delay));
         } else {
           break;
@@ -231,10 +199,8 @@ app.post("/api/analyze", async (req, res) => {
     }
 
     throw lastError;
-
   } catch (error: any) {
     console.error("Erro na análise:", error);
-
     if (error?.message?.includes("Document size exceeds")) {
       return res.status(413).json({ error: "Arquivo muito grande. Comprima o PDF e tente novamente." });
     }
@@ -242,31 +208,10 @@ app.post("/api/analyze", async (req, res) => {
       return res.status(400).json({ error: `Erro de validação: ${error.message}` });
     }
     if (error?.status === 503 || error?.message?.includes("overloaded")) {
-      return res.status(503).json({
-        error: "Serviço de IA sobrecarregado (503). Aguarde alguns minutos e tente novamente.",
-      });
+      return res.status(503).json({ error: "Serviço de IA sobrecarregado (503). Aguarde alguns minutos e tente novamente." });
     }
-
     res.status(500).json({ error: error.message || "Erro desconhecido." });
   }
 });
 
-// ─── Vite Dev / Static Prod ───────────────────────────────────────────────────
-if (process.env.NODE_ENV !== "production") {
-  const { createServer: createViteServer } = await import("vite");
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: "spa",
-  });
-  app.use(vite.middlewares);
-} else {
-  const distPath = path.join(process.cwd(), "dist");
-  app.use(express.static(distPath));
-  app.get("*all", (_req, res) => res.sendFile(path.join(distPath, "index.html")));
-}
-
-app.listen(PORT, "0.0.0.0", () => {
-  const apiOk = !!(process.env.GEMINI_API_KEY || process.env.API_KEY);
-  console.log(`Servidor ITCD-MT Analytics rodando em http://localhost:${PORT}`);
-  console.log(`API Key: ${apiOk ? "CONFIGURADA (Gemini 2.5 Pro)" : "NÃO CONFIGURADA"}`);
-});
+export default app;
