@@ -1,6 +1,5 @@
 import { FileData } from "../types";
 
-// Threshold: files above this go via multipart upload to the server's Files API proxy
 const LARGE_FILE_THRESHOLD = 40 * 1024 * 1024; // 40 MB
 
 export const testConnection = async (): Promise<boolean> => {
@@ -25,7 +24,7 @@ export const analyzeItcdProcess = async (
 
   for (const fileData of files) {
     if (fileData.file.size >= LARGE_FILE_THRESHOLD) {
-      // Large file: upload via server-side Files API proxy first
+      // Large file: upload to server, which extracts the text from the PDF
       const formData = new FormData();
       formData.append('file', fileData.file);
 
@@ -42,12 +41,11 @@ export const analyzeItcdProcess = async (
       const uploadData = await uploadRes.json();
       serializableFiles.push({
         name: fileData.file.name,
-        mimeType: uploadData.mimeType,
-        fileUri: uploadData.fileUri,
+        extractedText: uploadData.extractedText,
         isLarge: true,
       });
     } else {
-      // Normal file: send as base64 JSON
+      // Normal file: send as base64, server extracts text
       serializableFiles.push({
         name: fileData.file.name,
         base64: fileData.base64,

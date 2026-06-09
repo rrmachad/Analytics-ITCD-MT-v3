@@ -64,8 +64,8 @@ export const Header: React.FC<HeaderProps> = ({ isApiConfigured, isApiValid, isT
                   {isTestingApi
                     ? 'Testando...'
                     : (isApiConfigured
-                        ? (isApiValid === true ? 'Gemini Ativa' : (isApiValid === false ? 'Erro Gemini' : 'Gemini Configurada'))
-                        : 'Gemini Ausente')}
+                        ? (isApiValid === true ? 'IA Ativa' : (isApiValid === false ? 'Erro IA' : 'IA Configurada'))
+                        : 'IA Ausente')}
                 </div>
 
                 {isApiConfigured && isApiValid !== true && !isTestingApi && (

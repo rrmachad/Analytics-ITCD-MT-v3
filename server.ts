@@ -1,6 +1,6 @@
 import express from "express";
-import { GoogleGenAI } from "@google/genai";
 import multer from "multer";
+import pdfParse from "pdf-parse";
 import path from "path";
 import { SYSTEM_INSTRUCTION } from "./constants";
 
@@ -10,19 +10,17 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 600
 
 app.use(express.json({ limit: "120mb" }));
 
-const getGeminiClient = () => {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY não configurada no ambiente do servidor.");
-  return new GoogleGenAI({ apiKey });
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const ANALYSIS_MODEL = process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash-preview";
+
+const getApiKey = () => {
+  const key = process.env.OPENROUTER_API_KEY;
+  if (!key) throw new Error("OPENROUTER_API_KEY não configurada no servidor.");
+  return key;
 };
 
-// Modelo configurável por env var. Default: gemini-2.5-flash (quota gratuita).
-// Para usar o Pro (requer faturamento ativo), defina GEMINI_MODEL=gemini-2.5-pro.
-const ANALYSIS_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-
 const buildAnalysisPrompt = (reportType: string, decisionType: string, userComments: string): string => {
-  const dateOptions: Intl.DateTimeFormatOptions = { year: "numeric", month: "long", day: "numeric" };
-  const formattedDate = new Date().toLocaleDateString("pt-BR", dateOptions);
+  const formattedDate = new Date().toLocaleDateString("pt-BR", { year: "numeric", month: "long", day: "numeric" });
 
   return `DATA DE REFERÊNCIA OBRIGATÓRIA: ${formattedDate}.
 
@@ -65,92 +63,49 @@ Decisão Solicitada: ${decisionType || "Análise do Sistema"}
    - **CÁLCULO FATIADO OBRIGATÓRIO**: Aplique SEMPRE o cálculo por faixas de alíquota progressiva. NUNCA aplique alíquota única sobre o total.`;
 };
 
+const callOpenRouter = (apiKey: string, messages: any[], maxTokens = 8000) =>
+  fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://analytics-itcd-mt-v3-4.vercel.app",
+      "X-Title": "ITCD-MT Analytics",
+    },
+    body: JSON.stringify({
+      model: ANALYSIS_MODEL,
+      messages,
+      temperature: 0.1,
+      max_tokens: maxTokens,
+    }),
+  });
+
 // ─── Health Check ────────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", apiConfigured: !!(process.env.GEMINI_API_KEY || process.env.API_KEY) });
+  res.json({ status: "ok", apiConfigured: !!process.env.OPENROUTER_API_KEY });
 });
 
 // ─── Test Connection ──────────────────────────────────────────────────────────
 app.get("/api/test-connection", async (_req, res) => {
   try {
-    const ai = getGeminiClient();
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: "ping",
-    });
-    res.json({ success: !!(response.text) });
+    const apiKey = getApiKey();
+    const response = await callOpenRouter(apiKey, [{ role: "user", content: "ping" }], 5);
+    const data = await response.json();
+    res.json({ success: response.ok && !!data.choices?.[0] });
   } catch (error: any) {
     console.error("Erro no teste de conexão:", error);
     res.status(500).json({ success: false, error: error.message || "Erro de conexão" });
   }
 });
 
-// ─── Large File Upload via Files API ─────────────────────────────────────────
+// ─── Large File Upload — extrai texto do PDF ─────────────────────────────────
 app.post("/api/upload-file", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Nenhum arquivo recebido." });
-
   try {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
-    if (!apiKey) return res.status(500).json({ error: "API Key não configurada." });
-
-    const initRes = await fetch(
-      `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "X-Goog-Upload-Protocol": "resumable",
-          "X-Goog-Upload-Command": "start",
-          "X-Goog-Upload-Header-Content-Length": req.file.size.toString(),
-          "X-Goog-Upload-Header-Content-Type": req.file.mimetype,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ file: { displayName: req.file.originalname } }),
-      }
-    );
-
-    if (!initRes.ok) throw new Error(`Falha ao iniciar upload: ${await initRes.text()}`);
-
-    const uploadUrl = initRes.headers.get("X-Goog-Upload-URL");
-    if (!uploadUrl) throw new Error("URL de upload não retornada pela API.");
-
-    const uploadRes = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        "Content-Length": req.file.size.toString(),
-        "X-Goog-Upload-Offset": "0",
-        "X-Goog-Upload-Command": "upload, finalize",
-      },
-      body: req.file.buffer,
-    });
-
-    if (!uploadRes.ok) throw new Error(`Falha no upload: ${await uploadRes.text()}`);
-
-    const fileInfoResponse = await uploadRes.json();
-    let currentFile = fileInfoResponse.file;
-
-    let attempts = 0;
-    while (currentFile.state === "PROCESSING" && attempts < 60) {
-      attempts++;
-      await new Promise((r) => setTimeout(r, 2000));
-      const statusRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/${currentFile.name}?key=${apiKey}`
-      );
-      if (!statusRes.ok) throw new Error(`Erro ao verificar status: ${await statusRes.text()}`);
-      currentFile = await statusRes.json();
-    }
-
-    if (currentFile.state !== "ACTIVE") {
-      throw new Error(`Arquivo não processado pelo Gemini. Estado final: ${currentFile.state}`);
-    }
-
-    res.json({
-      fileUri: currentFile.uri,
-      mimeType: currentFile.mimeType,
-      fileName: req.file.originalname,
-    });
+    const parsed = await pdfParse(req.file.buffer);
+    res.json({ extractedText: parsed.text, fileName: req.file.originalname });
   } catch (error: any) {
-    console.error("Erro no upload de arquivo:", error);
-    res.status(500).json({ error: error.message || "Erro no upload" });
+    res.status(500).json({ error: `Falha ao extrair texto do PDF: ${error.message}` });
   }
 });
 
@@ -168,34 +123,26 @@ app.post("/api/analyze", async (req, res) => {
   }
 
   try {
-    const ai = getGeminiClient();
-    const parts: any[] = [];
+    const apiKey = getApiKey();
 
+    let documentContent = "";
     for (const fileData of files) {
-      parts.push({ text: `[INÍCIO DO ARQUIVO: ${fileData.name}]` });
-
-      if (fileData.isLarge && fileData.fileUri) {
-        // Large file: reference via Files API URI
-        parts.push({
-          fileData: {
-            mimeType: fileData.mimeType,
-            fileUri: fileData.fileUri,
-          },
-        });
+      documentContent += `\n[INÍCIO DO ARQUIVO: ${fileData.name}]\n`;
+      if (fileData.extractedText) {
+        documentContent += fileData.extractedText;
       } else if (fileData.base64) {
-        // Normal file: inline base64 (native PDF support in Gemini)
-        parts.push({
-          inlineData: {
-            mimeType: fileData.mimeType || "application/pdf",
-            data: fileData.base64,
-          },
-        });
+        const buffer = Buffer.from(fileData.base64, "base64");
+        const parsed = await pdfParse(buffer);
+        documentContent += parsed.text;
       }
-
-      parts.push({ text: `[FIM DO ARQUIVO: ${fileData.name}]` });
+      documentContent += `\n[FIM DO ARQUIVO: ${fileData.name}]\n`;
     }
 
-    parts.push({ text: buildAnalysisPrompt(reportType, decisionType, userComments) });
+    const userMessage = documentContent + "\n\n" + buildAnalysisPrompt(reportType, decisionType, userComments);
+    const messages = [
+      { role: "system", content: SYSTEM_INSTRUCTION },
+      { role: "user", content: userMessage },
+    ];
 
     const MAX_RETRIES = 5;
     const BASE_DELAY = 3000;
@@ -203,33 +150,30 @@ app.post("/api/analyze", async (req, res) => {
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        console.log(`Análise — tentativa ${attempt}/${MAX_RETRIES}...`);
+        console.log(`Análise — tentativa ${attempt}/${MAX_RETRIES} (${ANALYSIS_MODEL})...`);
+        const response = await callOpenRouter(apiKey, messages);
+        const data = await response.json();
 
-        const response = await ai.models.generateContent({
-          model: ANALYSIS_MODEL,
-          contents: { role: "user", parts },
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.1,
-          },
-        });
+        if (!response.ok) {
+          const errMsg = data.error?.message || JSON.stringify(data.error) || "Erro OpenRouter";
+          const code = Number(data.error?.code || response.status);
+          if ([429, 500, 503].includes(code) && attempt < MAX_RETRIES) {
+            const delay = BASE_DELAY * Math.pow(2, attempt - 1) + Math.random() * 1000;
+            console.log(`Erro transitório (${code}). Retry em ${Math.round(delay / 1000)}s...`);
+            await new Promise(r => setTimeout(r, delay));
+            lastError = new Error(errMsg);
+            continue;
+          }
+          throw new Error(errMsg);
+        }
 
-        return res.json({ result: response.text || "Sem resultado gerado. Tente novamente." });
+        return res.json({ result: data.choices?.[0]?.message?.content || "Sem resultado gerado. Tente novamente." });
 
       } catch (error: any) {
         lastError = error;
-        const isRetryable =
-          error.status === 503 ||
-          error.status === 500 ||
-          error.status === 429 ||
-          (error.message && (error.message.includes("503") || error.message.includes("overloaded") || error.message.includes("quota")));
-
-        if (isRetryable && attempt < MAX_RETRIES) {
+        if (attempt < MAX_RETRIES) {
           const delay = BASE_DELAY * Math.pow(2, attempt - 1) + Math.random() * 1000;
-          console.log(`Erro transitório. Tentando novamente em ${Math.round(delay / 1000)}s...`);
-          await new Promise((r) => setTimeout(r, delay));
-        } else {
-          break;
+          await new Promise(r => setTimeout(r, delay));
         }
       }
     }
@@ -238,19 +182,6 @@ app.post("/api/analyze", async (req, res) => {
 
   } catch (error: any) {
     console.error("Erro na análise:", error);
-
-    if (error?.message?.includes("Document size exceeds")) {
-      return res.status(413).json({ error: "Arquivo muito grande. Comprima o PDF e tente novamente." });
-    }
-    if (error?.status === 400) {
-      return res.status(400).json({ error: `Erro de validação: ${error.message}` });
-    }
-    if (error?.status === 503 || error?.message?.includes("overloaded")) {
-      return res.status(503).json({
-        error: "Serviço de IA sobrecarregado (503). Aguarde alguns minutos e tente novamente.",
-      });
-    }
-
     res.status(500).json({ error: error.message || "Erro desconhecido." });
   }
 });
@@ -270,7 +201,7 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 app.listen(PORT, "0.0.0.0", () => {
-  const apiOk = !!(process.env.GEMINI_API_KEY || process.env.API_KEY);
+  const apiOk = !!process.env.OPENROUTER_API_KEY;
   console.log(`Servidor ITCD-MT Analytics rodando em http://localhost:${PORT}`);
-  console.log(`API Key: ${apiOk ? "CONFIGURADA (Gemini 2.5 Pro)" : "NÃO CONFIGURADA"}`);
+  console.log(`OpenRouter API Key: ${apiOk ? `CONFIGURADA (${ANALYSIS_MODEL})` : "NÃO CONFIGURADA"}`);
 });
