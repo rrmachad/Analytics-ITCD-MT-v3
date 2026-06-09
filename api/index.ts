@@ -14,6 +14,10 @@ const getGeminiClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// Modelo configurável por env var. Default: gemini-2.5-flash (quota gratuita).
+// Para usar o Pro (requer faturamento ativo), defina GEMINI_MODEL=gemini-2.5-pro.
+const ANALYSIS_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+
 const buildAnalysisPrompt = (reportType: string, decisionType: string, userComments: string): string => {
   const formattedDate = new Date().toLocaleDateString("pt-BR", { year: "numeric", month: "long", day: "numeric" });
 
@@ -178,7 +182,7 @@ app.post("/api/analyze", async (req, res) => {
       try {
         console.log(`Análise — tentativa ${attempt}/${MAX_RETRIES}...`);
         const response = await ai.models.generateContent({
-          model: "gemini-2.5-pro",
+          model: ANALYSIS_MODEL,
           contents: { role: "user", parts },
           config: { systemInstruction: SYSTEM_INSTRUCTION, temperature: 0.1 },
         });
