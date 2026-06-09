@@ -1,7 +1,7 @@
 import express from "express";
 import { GoogleGenAI } from "@google/genai";
 import multer from "multer";
-import { SYSTEM_INSTRUCTION } from "../constants";
+import { SYSTEM_INSTRUCTION } from "../constants.js";
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
