@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "n8n-itcd": {
-      "type": "http",
-      "url": "https://citcd2026mt.app.n8n.cloud/mcp-server/http"
-    }
-  }
-}
