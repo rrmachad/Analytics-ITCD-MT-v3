@@ -2,6 +2,7 @@ import express from "express";
 import multer from "multer";
 import pdfParse from "pdf-parse";
 import path from "path";
+import rateLimit from "express-rate-limit";
 import { SYSTEM_INSTRUCTION } from "./constants";
 
 const app = express();
@@ -9,6 +10,26 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 600 * 1024 * 1024 } });
 
 app.use(express.json({ limit: "120mb" }));
+
+// Limiter geral — proteção básica em todas as rotas
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: 60, // 60 req / 15 min por IP
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Muitas requisições. Tente novamente em alguns minutos." },
+});
+
+// Limiter estrito — endpoints que chamam a IA (custo por token)
+const analysisLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hora
+  max: 20, // 20 req / hora por IP
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Limite de análises por hora atingido. Tente novamente em 1 hora." },
+});
+
+app.use(generalLimiter);
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const ANALYSIS_MODEL = process.env.OPENROUTER_MODEL || "google/gemini-2.5-flash-preview";
@@ -99,7 +120,7 @@ app.get("/api/test-connection", async (_req, res) => {
 });
 
 // ─── Large File Upload — extrai texto do PDF ─────────────────────────────────
-app.post("/api/upload-file", upload.single("file"), async (req, res) => {
+app.post("/api/upload-file", analysisLimiter, upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Nenhum arquivo recebido." });
   try {
     const parsed = await pdfParse(req.file.buffer);
@@ -110,7 +131,7 @@ app.post("/api/upload-file", upload.single("file"), async (req, res) => {
 });
 
 // ─── Main Analysis Endpoint ───────────────────────────────────────────────────
-app.post("/api/analyze", async (req, res) => {
+app.post("/api/analyze", analysisLimiter, async (req, res) => {
   const {
     files,
     userComments = "",
