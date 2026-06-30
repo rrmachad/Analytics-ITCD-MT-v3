@@ -119,7 +119,7 @@ const App: React.FC = () => {
               <div>
                 <h4 className="text-sm font-bold text-amber-800">Chave API não configurada</h4>
                 <p className="text-xs text-amber-700 mt-1">
-                  A variável de ambiente <code className="bg-amber-100 px-1 rounded">GEMINI_API_KEY</code> não foi
+                  A variável de ambiente <code className="bg-amber-100 px-1 rounded">OPENROUTER_API_KEY</code> não foi
                   detectada no servidor. Configure-a para que a IA funcione.
                 </p>
               </div>
@@ -161,7 +161,7 @@ const App: React.FC = () => {
                 <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
                 <div className="h-2 w-2 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
               </div>
-              <p className="text-sm text-slate-600 font-medium">Lendo documentos com Gemini 2.5 Pro...</p>
+              <p className="text-sm text-slate-600 font-medium">Lendo documentos com IA...</p>
               <p className="text-xs text-slate-400 mt-1">Análise técnico-jurídica em andamento. Processos complexos podem levar alguns minutos.</p>
             </div>
           </div>
